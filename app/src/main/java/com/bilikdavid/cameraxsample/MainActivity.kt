@@ -1,28 +1,30 @@
 package com.bilikdavid.cameraxsample
 
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.android.synthetic.main.activity_main.*
+import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
     private var imageCapture: ImageCapture? = null
     lateinit var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>
+    lateinit var previewUseCase: Preview
 
     companion object {
 
         const val REQUEST_PERMISSION_CAMERA = 12
+
+        private const val TAG = "CameraPreviewApp"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,13 +37,29 @@ class MainActivity : AppCompatActivity() {
 
         }
         btn_take_picture.setOnClickListener {
-            imageCapture?.takePicture(Executors.newSingleThreadExecutor(), object : ImageCapture.OnImageCapturedCallback() {
-                override fun onCaptureSuccess(image: ImageProxy) {
-                    super.onCaptureSuccess(image)
-                    Log.d("MainActivity", "Image captured: ${image.width}x${image.height}")
+            stopPreview()
+            val imageFile = File(cacheDir, "image.png")
+            val fileOptions = ImageCapture.OutputFileOptions.Builder(imageFile)
+                .build()
+            imageCapture?.takePicture(fileOptions, Executors.newSingleThreadExecutor(), object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    try {
+                        val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath)
+                        Log.d(TAG, "Bitmap retrieved ${bitmap.width}x${bitmap.height}")
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    exception.printStackTrace()
                 }
             })
         }
+    }
+
+    fun stopPreview() {
+        cameraProviderFuture.get().unbind(previewUseCase)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -58,14 +76,12 @@ class MainActivity : AppCompatActivity() {
                 val cameraProvider = cameraProviderFuture.get()
                 bindPreview(cameraProvider)
             }, ContextCompat.getMainExecutor(this))
-
     }
 
     private fun bindPreview(cameraProvider: ProcessCameraProvider) {
-        val preview: Preview = Preview.Builder()
-            .build()
+        previewUseCase = Preview.Builder().build()
 
-        preview.setSurfaceProvider(preview_view.previewSurfaceProvider)
+        previewUseCase.setSurfaceProvider(preview_view.previewSurfaceProvider)
 
         val cameraSelector: CameraSelector = CameraSelector.Builder()
             .requireLensFacing(CameraSelector.LENS_FACING_BACK)
@@ -76,6 +92,22 @@ class MainActivity : AppCompatActivity() {
             .setTargetRotation(windowManager.defaultDisplay.rotation)
             .build()
 
-        cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture)
+        val imageAnalysisUseCase = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .apply {
+                setAnalyzer(Executors.newSingleThreadExecutor(), ImageAnalyzer())
+            }
+
+        cameraProvider.bindToLifecycle(this, cameraSelector, previewUseCase, imageAnalysisUseCase, imageCapture)
+    }
+
+    class ImageAnalyzer : ImageAnalysis.Analyzer {
+        override fun analyze(image: ImageProxy) {
+            Log.d(TAG, "Analyzing image ${image.width}x${image.height}")
+
+            image.close()
+        }
+
     }
 }
